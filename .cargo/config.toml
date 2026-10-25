@@ -1,0 +1,13 @@
+[target.riscv32imac-unknown-none-elf]
+runner = "espflash flash --monitor"
+rustflags = [
+    "-C", "link-arg=-Tlinkall.x",
+]
+
+[build]
+target = "riscv32imac-unknown-none-elf"
+
+[env]
+MCU = "esp32c6"
+WIFI_SSID = "foo"
+WIFI_PASS = "bar"
