@@ -484,8 +484,8 @@ where
     T: DrawTarget<Color = Rgb565>,
 {
     let mut text = heapless::String::<160>::new();
-    {
-        let status = STATUS.lock().await;
+    STATUS.lock(|cell| {
+        let status = cell.borrow();
         write!(
             &mut text,
             "SSID: {}\nPhase: {:?}\nIP: {}\nQuote time: {}\nSource: {}",
@@ -496,7 +496,7 @@ where
             QUOTE_SOURCE,
         )
         .ok();
-    }
+    });
 
     let style = MonoTextStyleBuilder::new()
         .font(&FONT_10X20)

@@ -26,7 +26,7 @@ pub const SYMBOLS: [Symbol; 9] = [
 
 pub const SYMBOL_COUNT: usize = SYMBOLS.len();
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct Quote {
     pub price: i32,
     pub change: i32,

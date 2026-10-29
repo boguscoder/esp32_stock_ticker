@@ -47,19 +47,19 @@ struct Ui {
 }
 
 impl Ui {
-    async fn fresh() -> Self {
-        let quotes = QUOTES.lock().await.clone();
+    fn new() -> Self {
+        let quotes = QUOTES.lock(|q| q.get());
         let tile_start = Instant::now();
         let tile_until = tile_start + Self::tile_dwell(&quotes, 0);
         Self {
             quotes,
-            status: STATUS.lock().await.clone(),
+            status: STATUS.lock(|s| s.borrow().clone()),
             page: Page::Ticker,
             tile: 0,
             awake: true,
             tile_start,
             tile_until,
-            screen_until: Instant::now() + SCREEN_PHASE,
+            screen_until: tile_start + SCREEN_PHASE,
             last_scroll: 0,
             render: Render::Full,
         }
@@ -81,13 +81,12 @@ impl Ui {
         )
     }
 
-    async fn sync_shared(&mut self) {
-        let quotes_now = QUOTES.lock().await.clone();
-        let status_now = STATUS.lock().await.clone();
+    fn sync_shared(&mut self) {
+        let quotes_now = QUOTES.lock(|q| q.get());
+        let status_now = STATUS.lock(|s| s.borrow().clone());
         if quotes_now != self.quotes || status_now != self.status {
             self.quotes = quotes_now;
             self.status = status_now;
-            // Fresh data outranks a pending band step.
             self.render = Render::Full;
         }
     }
@@ -206,10 +205,9 @@ async fn main(spawner: Spawner) -> ! {
     );
 
     let mut display = init_display!(peripherals: peripherals);
-    let mut ui = Ui::fresh().await;
+    let mut ui = Ui::new();
 
     loop {
-        // One scroll read per paint: paint and the stored rebase must agree.
         let scroll = ui.scroll();
         match ui.take_render() {
             Render::Band => {
@@ -229,6 +227,6 @@ async fn main(spawner: Spawner) -> ! {
             Either::First(event) => ui.on_button(event),
             Either::Second(()) => ui.on_timeout(),
         }
-        ui.sync_shared().await;
+        ui.sync_shared();
     }
 }

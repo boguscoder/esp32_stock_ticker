@@ -1,15 +1,17 @@
 use crate::quotes::{parse_quotes, parse_timestamp, Quote, SYMBOLS, SYMBOL_COUNT};
-use core::net::Ipv4Addr;
+use core::{
+    cell::{Cell, RefCell},
+    net::Ipv4Addr,
+};
 use embassy_executor::Spawner;
 use embassy_net::{tcp::client::TcpClientState, Stack};
-use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, mutex::Mutex};
+use embassy_sync::blocking_mutex::{raw::CriticalSectionRawMutex, Mutex};
 use embassy_time::{Duration, Timer};
 use esp_hal::peripherals::WIFI;
 use esp_radio::wifi::WifiController;
-use static_cell::StaticCell;
 
-pub static QUOTES: Mutex<CriticalSectionRawMutex, [Option<Quote>; SYMBOL_COUNT]> =
-    Mutex::new([const { None }; SYMBOL_COUNT]);
+pub static QUOTES: Mutex<CriticalSectionRawMutex, Cell<[Option<Quote>; SYMBOL_COUNT]>> =
+    Mutex::new(Cell::new([const { None }; SYMBOL_COUNT]));
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Status {
@@ -49,7 +51,8 @@ pub enum Phase {
     Online,
 }
 
-pub static STATUS: Mutex<CriticalSectionRawMutex, Status> = Mutex::new(Status::new());
+pub static STATUS: Mutex<CriticalSectionRawMutex, RefCell<Status>> =
+    Mutex::new(RefCell::new(Status::new()));
 
 pub const POLL_INTERVAL: Duration = Duration::from_secs(30);
 pub const QUOTE_SOURCE: &str = "hq.sinajs.cn";
@@ -68,22 +71,19 @@ pub fn start_networking(wifi_peripheral: WIFI<'static>, spawner: Spawner) {
 
 #[embassy_executor::task]
 async fn refresh_task(mut controller: WifiController<'static>, stack: Stack<'static>) {
-    static TCP: StaticCell<TcpClientState<1, 2048, 2048>> = StaticCell::new();
-    static RX: StaticCell<[u8; 8192]> = StaticCell::new();
-    let tcp_state = TCP.init(TcpClientState::new());
-    let rx = RX.init([0u8; 8192]);
+    let (tcp_state, rx) = waveshare_net::http_buffers();
 
     let mut associated = false;
     let mut consecutive_failures = 0u32;
 
     loop {
         if !associated {
-            STATUS.lock().await.set_phase(Phase::Connecting);
+            STATUS.lock(|s| s.borrow_mut().set_phase(Phase::Connecting));
             let joined =
                 waveshare_net::connect_with_retries(&mut controller, 5, Duration::from_secs(10))
                     .await;
             if !joined {
-                STATUS.lock().await.set_phase(Phase::Offline);
+                STATUS.lock(|s| s.borrow_mut().set_phase(Phase::Offline));
                 Timer::after(POLL_INTERVAL).await;
                 continue;
             }
@@ -92,15 +92,17 @@ async fn refresh_task(mut controller: WifiController<'static>, stack: Stack<'sta
 
         // Online = the stack holds an address, not just an association.
         if let Some(ip) = waveshare_net::wait_for_ip(&stack, Duration::from_millis(250), 40).await {
-            let mut status = STATUS.lock().await;
-            status.set_ip(ip);
-            status.set_phase(Phase::Online);
+            STATUS.lock(|s| {
+                let mut status = s.borrow_mut();
+                status.set_ip(ip);
+                status.set_phase(Phase::Online);
+            });
         }
 
-        if let Some((quotes, ts)) = fetch_quotes(stack, tcp_state, &mut rx[..]).await {
-            *QUOTES.lock().await = quotes;
+        if let Some((quotes, ts)) = fetch_quotes(stack, tcp_state, rx).await {
+            QUOTES.lock(|q| q.set(quotes));
             if let Some(ts) = ts {
-                STATUS.lock().await.set_quote_time(ts);
+                STATUS.lock(|s| s.borrow_mut().set_quote_time(ts));
             }
             consecutive_failures = 0;
         } else {
@@ -108,7 +110,7 @@ async fn refresh_task(mut controller: WifiController<'static>, stack: Stack<'sta
         }
 
         if consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
-            STATUS.lock().await.set_phase(Phase::Offline);
+            STATUS.lock(|s| s.borrow_mut().set_phase(Phase::Offline));
             let _ = controller.disconnect_async().await;
             associated = false;
             consecutive_failures = 0;

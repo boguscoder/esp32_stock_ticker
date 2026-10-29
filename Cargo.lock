@@ -1962,7 +1962,6 @@ dependencies = [
  "esp-radio",
  "esp-rtos",
  "heapless 0.8.0",
- "static_cell",
  "waveshare_button",
  "waveshare_display",
  "waveshare_net",
