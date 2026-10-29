@@ -7,7 +7,7 @@ mod screen;
 
 use crate::{
     net::{QUOTES, STATUS},
-    quotes::{Quote, SYMBOL_COUNT},
+    quotes::{Quote, SYMBOLS, SYMBOL_COUNT},
     screen::{draw, marquee_scroll, next_marquee_step, redraw_marquee, tile_dwell_ms, Page},
 };
 use embassy_executor::Spawner;
@@ -67,20 +67,18 @@ impl Ui {
 
     fn tile_dwell(quotes: &[Option<Quote>; SYMBOL_COUNT], tile: usize) -> Duration {
         Duration::from_millis(tile_dwell_ms(
-            quotes[tile].as_ref().map(|q| q.name.as_str()),
+            quotes[tile].as_ref().map(|_| SYMBOLS[tile].name),
         ))
     }
 
     fn scroll(&self) -> i32 {
-        if self.page != Page::Ticker {
+        if self.page != Page::Ticker || self.quotes[self.tile].is_none() {
             return 0;
         }
-        match &self.quotes[self.tile] {
-            Some(quote) if !quote.name.is_empty() => {
-                marquee_scroll(&quote.name, self.tile_start.elapsed().as_millis())
-            }
-            _ => 0,
-        }
+        marquee_scroll(
+            SYMBOLS[self.tile].name,
+            self.tile_start.elapsed().as_millis(),
+        )
     }
 
     async fn sync_shared(&mut self) {
@@ -177,8 +175,11 @@ impl Ui {
     }
 
     fn next_band_step(&self) -> Option<Instant> {
-        let quote = self.quotes[self.tile].as_ref()?;
-        let at = next_marquee_step(quote.name.as_str(), self.tile_start.elapsed().as_millis())?;
+        self.quotes[self.tile].as_ref()?;
+        let at = next_marquee_step(
+            SYMBOLS[self.tile].name,
+            self.tile_start.elapsed().as_millis(),
+        )?;
         Some(self.tile_start + Duration::from_millis(at))
     }
 }
@@ -212,7 +213,7 @@ async fn main(spawner: Spawner) -> ! {
         let scroll = ui.scroll();
         match ui.take_render() {
             Render::Band => {
-                redraw_marquee(&mut display, ui.tile, &ui.quotes, scroll).await;
+                redraw_marquee(&mut display, SYMBOLS[ui.tile].name, scroll).await;
                 ui.last_scroll = scroll;
             }
             Render::Full => {

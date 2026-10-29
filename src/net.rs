@@ -52,6 +52,7 @@ pub enum Phase {
 pub static STATUS: Mutex<CriticalSectionRawMutex, Status> = Mutex::new(Status::new());
 
 pub const POLL_INTERVAL: Duration = Duration::from_secs(30);
+pub const QUOTE_SOURCE: &str = "hq.sinajs.cn";
 const MAX_CONSECUTIVE_FAILURES: u32 = 5;
 
 pub fn start_networking(wifi_peripheral: WIFI<'static>, spawner: Spawner) {
@@ -123,15 +124,27 @@ async fn fetch_quotes(
     rx: &mut [u8],
 ) -> Option<([Option<Quote>; SYMBOL_COUNT], Option<heapless::String<20>>)> {
     let mut url = heapless::String::<128>::new();
-    url.push_str("http://qt.gtimg.cn/q=us").ok();
+    url.push_str("http://").ok();
+    url.push_str(QUOTE_SOURCE).ok();
+    url.push_str("/list=").ok();
     for (i, sym) in SYMBOLS.iter().enumerate() {
         if i > 0 {
-            url.push_str(",us").ok();
+            url.push_str(",").ok();
         }
-        url.push_str(sym).ok();
+        url.push_str("gb_").ok();
+        for c in sym.label.chars() {
+            url.push(c.to_ascii_lowercase()).ok();
+        }
     }
 
-    let body = waveshare_net::http_get(stack, tcp_state, rx, url.as_str()).await?;
+    let body = waveshare_net::http_get(
+        stack,
+        tcp_state,
+        rx,
+        url.as_str(),
+        &[("Referer", "https://finance.sina.com.cn")],
+    )
+    .await?;
 
     Some((parse_quotes(body), parse_timestamp(body)))
 }

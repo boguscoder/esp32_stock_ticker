@@ -1,5 +1,5 @@
-use crate::net::STATUS;
-use crate::quotes::{fmt_money, fmt_pct, Quote, SYMBOL_COUNT};
+use crate::net::{QUOTE_SOURCE, STATUS};
+use crate::quotes::{fmt_money, fmt_pct, Quote, SYMBOLS, SYMBOL_COUNT};
 use core::{
     fmt::{Display, Write},
     sync::atomic::{AtomicU32, Ordering},
@@ -89,13 +89,13 @@ pub async fn draw(
         Page::Ticker => match &quotes[tile] {
             Some(quote) => draw_tile(
                 &mut fbuf,
-                crate::quotes::SYMBOLS[tile],
+                SYMBOLS[tile].label,
                 quote,
                 tile,
                 SYMBOL_COUNT,
                 scroll,
             ),
-            None => draw_placeholder(&mut fbuf, crate::quotes::SYMBOLS[tile], tile, SYMBOL_COUNT),
+            None => draw_placeholder(&mut fbuf, SYMBOLS[tile].label, tile, SYMBOL_COUNT),
         },
         Page::Status => draw_status(&mut fbuf).await,
     };
@@ -106,20 +106,11 @@ pub async fn draw(
 
 // Marquee-only step: repaint the name band into the framebuffer and push just
 // those rows with a single window write, keeping ticks cheap for the button task.
-pub async fn redraw_marquee(
-    raw_display: &mut Panel<'_>,
-    tile: usize,
-    quotes: &[Option<Quote>; SYMBOL_COUNT],
-    scroll: i32,
-) {
-    let Some(quote) = &quotes[tile] else {
-        return;
-    };
-
+pub async fn redraw_marquee(raw_display: &mut Panel<'_>, name: &str, scroll: i32) {
     let mut fb_guard = FRAMEBUFFER.lock().await;
     {
         let mut fbuf = FrameBuf::new(&mut *fb_guard, WIDTH as usize, HEIGHT as usize);
-        draw_name_band(&mut fbuf, quote.name.as_str(), scroll);
+        draw_name_band(&mut fbuf, name, scroll);
     }
 
     let mut panel = LandscapeDisplay { base: raw_display };
@@ -366,7 +357,7 @@ where
     let price = fmt_money(quote.price, false);
     draw_title(target, label, price.as_str(), color);
 
-    draw_name_band(target, quote.name.as_str(), scroll);
+    draw_name_band(target, SYMBOLS[index].name, scroll);
 
     let row_style = MonoTextStyleBuilder::new()
         .font(&FONT_10X20)
@@ -385,6 +376,9 @@ where
         .ok();
     } else {
         let mut row = heapless::String::<40>::new();
+        if quote.extended {
+            row.push_str("AH ").ok();
+        }
         row.push_str(fmt_money(quote.change, true).as_str()).ok();
         row.push(' ').ok();
         row.push_str(fmt_pct(quote.change_pct).as_str()).ok();
@@ -484,11 +478,12 @@ where
         let status = STATUS.lock().await;
         write!(
             &mut text,
-            "SSID: {}\nPhase: {:?}\nIP: {}\nQuote time: {}",
+            "SSID: {}\nPhase: {:?}\nIP: {}\nQuote time: {}\nSource: {}",
             status.ssid,
             status.phase,
             opt_display(&status.ip),
             opt_display(&status.quote_time),
+            QUOTE_SOURCE,
         )
         .ok();
     }
