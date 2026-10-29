@@ -1,6 +1,7 @@
 //! hq.sinajs.cn `gb_*` rows: [1]=price [2]=change % [4]=change [26]=prev close;
-//! extended [21]=price [22]=change % [23]=change, populated only while that
-//! session streams. Stamps: [24]=extended [25]=regular. Money scales ×100.
+//! extended [21]=price [22]=change % [23]=change, which mirror the close until
+//! that session prints a trade. Stamps: [24]=extended [25]=regular. Money
+//! scales ×100.
 
 use core::fmt;
 
@@ -77,17 +78,19 @@ fn symbol_row<'a>(body: &'a [u8], label: &str) -> Option<&'a [u8]> {
 fn parse_symbol_quote(body: &[u8], label: &str) -> Option<Quote> {
     let row = symbol_row(body, label)?;
 
+    let price = field(row, 1).and_then(parse_fixed)?;
+
     let extended_price = field(row, 21).and_then(parse_fixed).unwrap_or(0);
-    if extended_price > 0 {
+    let extended_change = field(row, 23).and_then(parse_fixed).unwrap_or(0);
+    if extended_price > 0 && extended_price != price && extended_change != 0 {
         return Some(Quote {
             price: extended_price,
-            change: field(row, 23).and_then(parse_fixed).unwrap_or(0),
+            change: extended_change,
             change_pct: field(row, 22).and_then(parse_fixed).unwrap_or(0),
             extended: true,
         });
     }
 
-    let price = field(row, 1).and_then(parse_fixed)?;
     let prev_close = field(row, 26).and_then(parse_fixed).unwrap_or(0);
     let change = match field(row, 4).and_then(parse_fixed) {
         Some(c) => c,

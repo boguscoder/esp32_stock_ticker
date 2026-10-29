@@ -376,26 +376,36 @@ where
         .ok();
     } else {
         let mut row = heapless::String::<40>::new();
-        if quote.extended {
-            row.push_str("AH ").ok();
-        }
         row.push_str(fmt_money(quote.change, true).as_str()).ok();
         row.push(' ').ok();
         row.push_str(fmt_pct(quote.change_pct).as_str()).ok();
 
-        // Unit width: 16px arrow + 8px gap + text; center it on the panel.
-        let unit_left = WIDTH / 2 - (row.len() as i32 * 10 + 24) / 2;
-        let row_cx = unit_left + 24 + (row.len() as i32 * 10) / 2;
+        // Unit width: optional 20px AH tag + 8px gap + 16px arrow + 8px gap + text.
+        let tag_w = if quote.extended { 28 } else { 0 };
+        let text_w = row.len() as i32 * 10;
+        let unit_left = WIDTH / 2 - (tag_w + text_w + 24) / 2;
+
+        if quote.extended {
+            Text::with_alignment(
+                "AH",
+                Point::new(unit_left + 10, 131),
+                row_style,
+                Alignment::Center,
+            )
+            .draw(target)
+            .ok();
+        }
+
         Text::with_alignment(
             row.as_str(),
-            Point::new(row_cx, 131),
+            Point::new(unit_left + tag_w + 24 + text_w / 2, 131),
             row_style,
             Alignment::Center,
         )
         .draw(target)
         .ok();
 
-        let tx = unit_left + 8;
+        let tx = unit_left + tag_w + 8;
         let (arrow, fill_color) = if quote.change > 0 {
             (
                 Triangle::new(
