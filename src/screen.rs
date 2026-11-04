@@ -63,15 +63,6 @@ pub enum Page {
     Status,
 }
 
-impl Page {
-    pub fn next(self) -> Self {
-        match self {
-            Page::Ticker => Page::Status,
-            Page::Status => Page::Ticker,
-        }
-    }
-}
-
 pub async fn draw(
     raw_display: &mut Panel<'_>,
     page: Page,

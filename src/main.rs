@@ -6,7 +6,7 @@ mod quotes;
 mod screen;
 
 use crate::{
-    net::{QUOTES, STATUS},
+    net::{POLL_INTERVAL, QUOTES, STATUS},
     quotes::{Quote, SYMBOLS, SYMBOL_COUNT},
     screen::{draw, marquee_scroll, next_marquee_step, redraw_marquee, tile_dwell_ms, Page},
 };
@@ -25,43 +25,46 @@ esp_bootloader_esp_idf::esp_app_desc!();
 
 const BACKLIGHT_BRIGHTNESS: u8 = 5;
 const SCREEN_PHASE: Duration = Duration::from_millis(60 * 1000);
+const STALE_AFTER: Duration = Duration::from_secs(POLL_INTERVAL.as_secs() * 10);
 
-#[derive(Copy, Clone, PartialEq)]
+#[derive(Copy, Clone)]
 enum Render {
-    None,
     Band,
     Full,
+}
+
+#[derive(Copy, Clone)]
+enum Mode {
+    Ticker,
+    Status { refresh_at: Instant },
+    Asleep { wake_at: Instant },
 }
 
 struct Ui {
     quotes: [Option<Quote>; SYMBOL_COUNT],
     status: net::Status,
-    page: Page,
+    mode: Mode,
     tile: usize,
-    awake: bool,
     tile_start: Instant,
     tile_until: Instant,
-    screen_until: Instant,
-    last_scroll: i32,
-    render: Render,
+    last_quote_at: Instant,
+    render: Option<Render>,
 }
 
 impl Ui {
     fn new() -> Self {
         let quotes = QUOTES.lock(|q| q.get());
-        let tile_start = Instant::now();
-        let tile_until = tile_start + Self::tile_dwell(&quotes, 0);
+        let now = Instant::now();
+        let tile_until = now + Self::tile_dwell(&quotes, 0);
         Self {
             quotes,
             status: STATUS.lock(|s| s.borrow().clone()),
-            page: Page::Ticker,
+            mode: Mode::Ticker,
             tile: 0,
-            awake: true,
-            tile_start,
+            tile_start: now,
             tile_until,
-            screen_until: tile_start + SCREEN_PHASE,
-            last_scroll: 0,
-            render: Render::Full,
+            last_quote_at: now,
+            render: Some(Render::Full),
         }
     }
 
@@ -71,8 +74,42 @@ impl Ui {
         ))
     }
 
+    fn quotes_stale(&self) -> bool {
+        self.last_quote_at.elapsed() >= STALE_AFTER
+    }
+
+    fn page(&self) -> Page {
+        match self.mode {
+            Mode::Status { .. } => Page::Status,
+            _ => Page::Ticker,
+        }
+    }
+
+    fn restart_tile(&mut self, now: Instant) {
+        self.tile_start = now;
+        self.tile_until = now + Self::tile_dwell(&self.quotes, self.tile);
+    }
+
+    fn wake(&mut self, now: Instant) {
+        self.mode = Mode::Ticker;
+        self.tile = 0;
+        self.render = Some(Render::Full);
+        self.restart_tile(now);
+    }
+
+    fn sleep(&mut self, now: Instant) {
+        let next = if self.quotes_stale() {
+            POLL_INTERVAL
+        } else {
+            SCREEN_PHASE
+        };
+        self.mode = Mode::Asleep {
+            wake_at: now + next,
+        };
+    }
+
     fn scroll(&self) -> i32 {
-        if self.page != Page::Ticker || self.quotes[self.tile].is_none() {
+        if !matches!(self.mode, Mode::Ticker) || self.quotes[self.tile].is_none() {
             return 0;
         }
         marquee_scroll(
@@ -82,95 +119,124 @@ impl Ui {
     }
 
     fn sync_shared(&mut self) {
+        let now = Instant::now();
         let quotes_now = QUOTES.lock(|q| q.get());
         let status_now = STATUS.lock(|s| s.borrow().clone());
-        if quotes_now != self.quotes || status_now != self.status {
+        let quotes_changed = quotes_now != self.quotes;
+        if quotes_changed || status_now != self.status {
+            let was_stale = self.quotes_stale();
             self.quotes = quotes_now;
             self.status = status_now;
-            self.render = Render::Full;
+            if quotes_changed {
+                self.last_quote_at = now;
+                if was_stale && matches!(self.mode, Mode::Asleep { .. }) {
+                    self.wake(now);
+                }
+            }
+            self.render = Some(Render::Full);
         }
     }
 
-    fn take_render(&mut self) -> Render {
-        let r = self.render;
-        self.render = Render::None;
-        r
+    fn take_render(&mut self) -> Option<Render> {
+        self.render.take()
     }
 
     fn observe_scroll(&mut self) {
-        if self.render == Render::None && self.awake && self.page == Page::Ticker {
-            let s = self.scroll();
-            if s != self.last_scroll {
-                self.render = Render::Band;
-            }
+        if self.render.is_none() && matches!(self.mode, Mode::Ticker) && self.scroll() != 0 {
+            self.render = Some(Render::Band);
         }
     }
 
     fn advance_tile(&mut self) {
         self.tile = (self.tile + 1) % SYMBOL_COUNT;
-        self.tile_start = Instant::now();
-        self.tile_until = self.tile_start + Self::tile_dwell(&self.quotes, self.tile);
-        self.render = Render::Full;
+        self.restart_tile(Instant::now());
+        self.render = Some(Render::Full);
     }
 
     fn on_button(&mut self, event: ButtonEvent) {
-        self.screen_until = Instant::now() + SCREEN_PHASE;
-        if !self.awake {
-            self.awake = true;
-            self.render = Render::Full;
-            self.tile_start = Instant::now();
-            self.tile_until = self.tile_start + Self::tile_dwell(&self.quotes, self.tile);
+        let now = Instant::now();
+        if matches!(self.mode, Mode::Asleep { .. }) {
+            self.wake(now);
         }
+
         match event {
             ButtonEvent::LongPress => {
-                self.page = self.page.next();
-                self.render = Render::Full;
-            }
-            ButtonEvent::ShortPress => match self.page {
-                Page::Ticker => self.advance_tile(),
-                Page::Status => {
-                    self.page = Page::Ticker;
-                    self.render = Render::Full;
+                if matches!(self.mode, Mode::Status { .. }) {
+                    self.mode = Mode::Ticker;
+                    self.restart_tile(now);
+                } else {
+                    self.mode = Mode::Status {
+                        refresh_at: now + SCREEN_PHASE,
+                    };
                 }
+                self.render = Some(Render::Full);
+            }
+            ButtonEvent::ShortPress => match self.mode {
+                Mode::Status { .. } => {
+                    self.mode = Mode::Ticker;
+                    self.render = Some(Render::Full);
+                    self.restart_tile(now);
+                }
+                _ => self.advance_tile(),
             },
         }
-        self.observe_scroll();
     }
 
     fn on_timeout(&mut self) {
         let now = Instant::now();
-        if now >= self.screen_until {
-            self.screen_until = now + SCREEN_PHASE;
-            self.awake = !self.awake;
-            if self.awake {
-                self.render = Render::Full;
-                self.tile_start = now;
-                self.tile_until = self.tile_start + Self::tile_dwell(&self.quotes, self.tile);
+
+        match self.mode {
+            Mode::Asleep { wake_at } => {
+                if now < wake_at {
+                    return;
+                }
+                if self.quotes_stale() {
+                    self.mode = Mode::Asleep {
+                        wake_at: now + POLL_INTERVAL,
+                    };
+                } else {
+                    self.wake(now);
+                }
+            }
+            Mode::Status { .. } => {
+                self.mode = Mode::Status {
+                    refresh_at: now + SCREEN_PHASE,
+                };
+            }
+            Mode::Ticker => {
+                if now >= self.tile_until {
+                    if self.tile + 1 == SYMBOL_COUNT {
+                        self.sleep(now);
+                    } else {
+                        self.advance_tile();
+                    }
+                } else {
+                    self.observe_scroll();
+                }
             }
         }
-        if self.awake && self.page == Page::Ticker && now >= self.tile_until {
-            self.advance_tile();
-        }
-        self.observe_scroll();
     }
 
     fn backlight_duty(&self) -> u8 {
-        if self.awake {
-            BACKLIGHT_BRIGHTNESS
-        } else {
+        if matches!(self.mode, Mode::Asleep { .. }) {
             0
+        } else {
+            BACKLIGHT_BRIGHTNESS
         }
     }
 
     fn next_wakeup(&self) -> Instant {
-        let mut next = self.screen_until;
-        if self.awake && self.page == Page::Ticker {
-            next = next.min(self.tile_until);
-            if let Some(step) = self.next_band_step() {
-                next = next.min(step);
+        match self.mode {
+            Mode::Asleep { wake_at } => wake_at,
+            Mode::Status { refresh_at } => refresh_at,
+            Mode::Ticker => {
+                let mut next = self.tile_until;
+                if let Some(step) = self.next_band_step() {
+                    next = next.min(step);
+                }
+                next
             }
         }
-        next
     }
 
     fn next_band_step(&self) -> Option<Instant> {
@@ -210,15 +276,13 @@ async fn main(spawner: Spawner) -> ! {
     loop {
         let scroll = ui.scroll();
         match ui.take_render() {
-            Render::Band => {
+            Some(Render::Band) => {
                 redraw_marquee(&mut display, SYMBOLS[ui.tile].name, scroll).await;
-                ui.last_scroll = scroll;
             }
-            Render::Full => {
-                draw(&mut display, ui.page, ui.tile, &ui.quotes, scroll).await;
-                ui.last_scroll = scroll;
+            Some(Render::Full) => {
+                draw(&mut display, ui.page(), ui.tile, &ui.quotes, scroll).await;
             }
-            Render::None => {}
+            None => {}
         }
         backlight_channel.set_duty(ui.backlight_duty()).unwrap();
 
