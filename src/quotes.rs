@@ -3,8 +3,6 @@
 //! that session prints a trade. Stamps: [24]=extended [25]=regular. Money
 //! scales ×100.
 
-use core::fmt;
-
 pub struct Symbol {
     pub label: &'static str,
     pub name: &'static str,
@@ -222,12 +220,4 @@ pub fn fmt_pct(hundredths: i32) -> heapless::String<16> {
     let abs = hundredths.abs();
     core::fmt::Write::write_fmt(&mut s, format_args!("{}.{:02}%", abs / 100, abs % 100)).ok();
     s
-}
-
-impl fmt::Display for Quote {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let money = fmt_money(self.day.price, false);
-        let pct = fmt_pct(self.day.change_pct);
-        write!(f, "{} ({})", money.as_str(), pct.as_str())
-    }
 }

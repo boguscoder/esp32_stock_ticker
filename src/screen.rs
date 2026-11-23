@@ -192,7 +192,7 @@ pub fn next_marquee_step(name: &str, elapsed_ms: u64) -> Option<u64> {
     Some(NAME_PAUSE_MS + settled - settled % step_ms + step_ms)
 }
 // 5x7 glyphs (5-bit rows, MSB left), slots: 0-9, A-Z, '.', '-', ',', space.
-const GLYPHS: [[u8; 7]; 40] = [
+const GLYPHS: &[[u8; 7]] = &[
     // 0-9
     [0x0E, 0x11, 0x13, 0x15, 0x19, 0x11, 0x0E],
     [0x04, 0x0C, 0x04, 0x04, 0x04, 0x04, 0x0E],
@@ -235,6 +235,7 @@ const GLYPHS: [[u8; 7]; 40] = [
     [0x00, 0x00, 0x00, 0x1F, 0x00, 0x00, 0x00], // -
     [0x00; 7],                                  // space
     [0x00, 0x00, 0x00, 0x00, 0x00, 0x0C, 0x18], // ,
+    [0x0C, 0x12, 0x14, 0x08, 0x15, 0x12, 0x0D], // &
 ];
 
 fn glyph_slot(c: char) -> Option<usize> {
@@ -243,8 +244,9 @@ fn glyph_slot(c: char) -> Option<usize> {
         'A'..='Z' => Some(10 + c as usize - 'A' as usize),
         '.' => Some(36),
         '-' => Some(37),
-        ',' => Some(39),
         ' ' => Some(38),
+        ',' => Some(39),
+        '&' => Some(40),
         _ => None,
     }
 }
