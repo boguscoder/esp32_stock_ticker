@@ -55,7 +55,7 @@ impl Ui {
     fn new() -> Self {
         let quotes = QUOTES.lock(|q| q.get());
         let now = Instant::now();
-        let tile_until = now + Self::tile_dwell(&quotes, 0);
+        let tile_until = now + Self::tile_dwell(0);
         Self {
             quotes,
             status: STATUS.lock(|s| s.borrow().clone()),
@@ -68,10 +68,8 @@ impl Ui {
         }
     }
 
-    fn tile_dwell(quotes: &[Option<Quote>; SYMBOL_COUNT], tile: usize) -> Duration {
-        Duration::from_millis(tile_dwell_ms(
-            quotes[tile].as_ref().map(|_| SYMBOLS[tile].name),
-        ))
+    fn tile_dwell(tile: usize) -> Duration {
+        Duration::from_millis(tile_dwell_ms(SYMBOLS[tile].name))
     }
 
     fn quotes_stale(&self) -> bool {
@@ -87,7 +85,7 @@ impl Ui {
 
     fn restart_tile(&mut self, now: Instant) {
         self.tile_start = now;
-        self.tile_until = now + Self::tile_dwell(&self.quotes, self.tile);
+        self.tile_until = now + Self::tile_dwell(self.tile);
     }
 
     fn wake(&mut self, now: Instant) {
@@ -109,7 +107,7 @@ impl Ui {
     }
 
     fn scroll(&self) -> i32 {
-        if !matches!(self.mode, Mode::Ticker) || self.quotes[self.tile].is_none() {
+        if !matches!(self.mode, Mode::Ticker) {
             return 0;
         }
         marquee_scroll(
@@ -118,8 +116,9 @@ impl Ui {
         )
     }
 
-    fn sync_shared(&mut self) {
+    fn refresh_from_net(&mut self) {
         let now = Instant::now();
+        let was_waiting = self.quotes.iter().all(Option::is_none);
         let quotes_now = QUOTES.lock(|q| q.get());
         let status_now = STATUS.lock(|s| s.borrow().clone());
         let quotes_changed = quotes_now != self.quotes;
@@ -131,6 +130,9 @@ impl Ui {
                 self.last_quote_at = now;
                 if was_stale && matches!(self.mode, Mode::Asleep { .. }) {
                     self.wake(now);
+                } else if was_waiting && self.quotes.iter().any(Option::is_some) {
+                    self.tile = 0;
+                    self.restart_tile(now);
                 }
             }
             self.render = Some(Render::Full);
@@ -182,7 +184,7 @@ impl Ui {
         }
     }
 
-    fn on_timeout(&mut self) {
+    fn on_deadline(&mut self) {
         let now = Instant::now();
 
         match self.mode {
@@ -225,7 +227,7 @@ impl Ui {
         }
     }
 
-    fn next_wakeup(&self) -> Instant {
+    fn next_deadline(&self) -> Instant {
         match self.mode {
             Mode::Asleep { wake_at } => wake_at,
             Mode::Status { refresh_at } => refresh_at,
@@ -240,7 +242,6 @@ impl Ui {
     }
 
     fn next_band_step(&self) -> Option<Instant> {
-        self.quotes[self.tile].as_ref()?;
         let at = next_marquee_step(
             SYMBOLS[self.tile].name,
             self.tile_start.elapsed().as_millis(),
@@ -286,11 +287,10 @@ async fn main(spawner: Spawner) -> ! {
         }
         backlight_channel.set_duty(ui.backlight_duty()).unwrap();
 
-        let which = select(BUTTON_EVENTS.wait(), Timer::at(ui.next_wakeup())).await;
-        match which {
+        match select(BUTTON_EVENTS.wait(), Timer::at(ui.next_deadline())).await {
             Either::First(event) => ui.on_button(event),
-            Either::Second(()) => ui.on_timeout(),
+            Either::Second(()) => ui.on_deadline(),
         }
-        ui.sync_shared();
+        ui.refresh_from_net();
     }
 }

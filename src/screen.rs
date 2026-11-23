@@ -86,7 +86,14 @@ pub async fn draw(
                 SYMBOL_COUNT,
                 scroll,
             ),
-            None => draw_placeholder(&mut fbuf, SYMBOLS[tile].label, tile, SYMBOL_COUNT),
+            None => draw_placeholder(
+                &mut fbuf,
+                SYMBOLS[tile].label,
+                SYMBOLS[tile].name,
+                tile,
+                SYMBOL_COUNT,
+                scroll,
+            ),
         },
         Page::Status => draw_status(&mut fbuf).await,
     };
@@ -112,6 +119,17 @@ pub async fn redraw_marquee(raw_display: &mut Panel<'_>, name: &str, scroll: i32
 
 const PRICE_SCALE: u32 = 5; // title band scale — ticker & price share one height
 const NAME_SCALE: u32 = 3; // 5x7 glyphs scaled ×3 → 21px tall
+
+const PRICE_TOP: i32 = 14;
+const PRICE_MARGIN: i32 = 8;
+
+const CHANGE_MARGIN: i32 = 8;
+const CHANGE_LINE_H: i32 = 22;
+const CHANGE_DAY_Y: i32 = 131;
+const CHANGE_AH_Y: i32 = CHANGE_DAY_Y + CHANGE_LINE_H;
+const CHANGE_BLOCK_TOP: i32 = CHANGE_DAY_Y - FONT_10X20.baseline as i32;
+const CHANGE_BLOCK_BOTTOM: i32 =
+    CHANGE_AH_Y + (FONT_10X20.character_size.height as i32 - FONT_10X20.baseline as i32);
 
 // Marquee: names wider than the panel sweep left once, stopping tail-side;
 // scroll is quantized so repaint cadence doesn't starve the button task.
@@ -143,10 +161,7 @@ fn marquee(name: &str) -> Option<Marquee> {
     })
 }
 
-pub fn tile_dwell_ms(name: Option<&str>) -> u64 {
-    let Some(name) = name else {
-        return BASE_TILE_DWELL_MS;
-    };
+pub fn tile_dwell_ms(name: &str) -> u64 {
     match marquee(name) {
         None => BASE_TILE_DWELL_MS,
         Some(m) => (NAME_PAUSE_MS + m.stop_px as u64 * 1000 / NAME_SPEED_PX_S as u64 + 400)
@@ -277,32 +292,114 @@ where
     }
 }
 
+fn change_color(change: i32) -> Rgb565 {
+    if change > 0 {
+        GAIN
+    } else if change < 0 {
+        LOSS
+    } else {
+        DIM
+    }
+}
+
 fn draw_title<T>(target: &mut T, label: &str, price: &str, color: Rgb565)
 where
     T: DrawTarget<Color = Rgb565>,
 {
-    let margin = 8;
     let measure = |s: &str, scale: u32| s.len() as i32 * 6 * scale as i32 - scale as i32;
     let mut scale = PRICE_SCALE;
-    while measure(label, scale) + measure(price, scale) + 2 * margin > WIDTH && scale > 3 {
+    while measure(label, scale) + measure(price, scale) + 2 * PRICE_MARGIN > WIDTH && scale > 3 {
         scale -= 1;
     }
     draw_big_text(
         target,
         label,
-        margin + measure(label, scale) / 2,
-        14,
+        PRICE_MARGIN + measure(label, scale) / 2,
+        PRICE_TOP,
         scale,
         FOREGROUND,
     );
     draw_big_text(
         target,
         price,
-        WIDTH - margin - measure(price, scale) / 2,
-        14,
+        WIDTH - PRICE_MARGIN - measure(price, scale) / 2,
+        PRICE_TOP,
         scale,
         color,
     );
+}
+
+fn draw_change_row<T>(
+    target: &mut T,
+    change: i32,
+    change_pct: i32,
+    y: i32,
+    color: Rgb565,
+    tag: Option<&str>,
+) where
+    T: DrawTarget<Color = Rgb565>,
+{
+    let style = MonoTextStyleBuilder::new()
+        .font(&FONT_10X20)
+        .text_color(color)
+        .background_color(BACKGROUND)
+        .build();
+
+    if change == 0 {
+        Text::with_alignment(
+            "NO DATA",
+            Point::new(CHANGE_MARGIN, y),
+            style,
+            Alignment::Left,
+        )
+        .draw(target)
+        .ok();
+        return;
+    }
+
+    let tx = CHANGE_MARGIN + 8;
+    let arrow = if change > 0 {
+        Triangle::new(
+            Point::new(tx, y - 12),
+            Point::new(tx - 8, y),
+            Point::new(tx + 8, y),
+        )
+    } else {
+        Triangle::new(
+            Point::new(tx, y),
+            Point::new(tx - 8, y - 12),
+            Point::new(tx + 8, y - 12),
+        )
+    };
+    arrow
+        .into_styled(PrimitiveStyle::with_fill(color))
+        .draw(target)
+        .ok();
+
+    let mut row = heapless::String::<40>::new();
+    row.push_str(fmt_money(change, true).as_str()).ok();
+    row.push(' ').ok();
+    row.push_str(fmt_pct(change_pct).as_str()).ok();
+    let text_x = CHANGE_MARGIN + 24;
+    Text::with_alignment(row.as_str(), Point::new(text_x, y), style, Alignment::Left)
+        .draw(target)
+        .ok();
+
+    if let Some(tag) = tag {
+        let tag_style = MonoTextStyleBuilder::new()
+            .font(&FONT_10X20)
+            .text_color(DIM)
+            .background_color(BACKGROUND)
+            .build();
+        Text::with_alignment(
+            tag,
+            Point::new(text_x + row.len() as i32 * 10 + 8, y),
+            tag_style,
+            Alignment::Left,
+        )
+        .draw(target)
+        .ok();
+    }
 }
 
 // Name band: clear, uppercase, then center or sweep per the marquee math.
@@ -331,105 +428,54 @@ where
         None => WIDTH / 2,
         Some(m) => NAME_MARGIN - scroll + (m.width_px - NAME_SCALE as i32) / 2,
     };
-    draw_big_text(target, upper.as_str(), cx, 73, NAME_SCALE, DIM);
+    let top = NAME_BAND_TOP + (NAME_BAND_H - 7 * NAME_SCALE as i32) / 2;
+    draw_big_text(target, upper.as_str(), cx, top, NAME_SCALE, DIM);
 }
 
 fn draw_tile<T>(target: &mut T, label: &str, quote: &Quote, index: usize, count: usize, scroll: i32)
 where
     T: DrawTarget<Color = Rgb565>,
 {
-    let color = if quote.change > 0 {
-        GAIN
-    } else if quote.change < 0 {
-        LOSS
-    } else {
-        DIM
-    };
-    let price = fmt_money(quote.price, false);
-    draw_title(target, label, price.as_str(), color);
+    let active = quote.ah.unwrap_or(quote.day);
+    let price = fmt_money(active.price, false);
+    draw_title(target, label, price.as_str(), change_color(active.change));
 
     draw_name_band(target, SYMBOLS[index].name, scroll);
 
-    let row_style = MonoTextStyleBuilder::new()
-        .font(&FONT_10X20)
-        .text_color(color)
-        .background_color(BACKGROUND)
-        .build();
-
-    if color == DIM {
-        Text::with_alignment(
-            "NO DATA",
-            Point::new(WIDTH / 2, 131),
-            row_style,
-            Alignment::Center,
-        )
-        .draw(target)
-        .ok();
-    } else {
-        let mut row = heapless::String::<40>::new();
-        row.push_str(fmt_money(quote.change, true).as_str()).ok();
-        row.push(' ').ok();
-        row.push_str(fmt_pct(quote.change_pct).as_str()).ok();
-
-        // Unit width: optional 20px AH tag + 8px gap + 16px arrow + 8px gap + text.
-        let tag_w = if quote.extended { 28 } else { 0 };
-        let text_w = row.len() as i32 * 10;
-        let unit_left = WIDTH / 2 - (tag_w + text_w + 24) / 2;
-
-        if quote.extended {
-            Text::with_alignment(
-                "AH",
-                Point::new(unit_left + 10, 131),
-                row_style,
-                Alignment::Center,
-            )
-            .draw(target)
-            .ok();
-        }
-
-        Text::with_alignment(
-            row.as_str(),
-            Point::new(unit_left + tag_w + 24 + text_w / 2, 131),
-            row_style,
-            Alignment::Center,
-        )
-        .draw(target)
-        .ok();
-
-        let tx = unit_left + tag_w + 8;
-        let (arrow, fill_color) = if quote.change > 0 {
-            (
-                Triangle::new(
-                    Point::new(tx, 119),
-                    Point::new(tx - 8, 131),
-                    Point::new(tx + 8, 131),
-                ),
-                GAIN,
-            )
-        } else {
-            (
-                Triangle::new(
-                    Point::new(tx, 131),
-                    Point::new(tx - 8, 119),
-                    Point::new(tx + 8, 119),
-                ),
-                LOSS,
-            )
-        };
-        arrow
-            .into_styled(PrimitiveStyle::with_fill(fill_color))
-            .draw(target)
-            .ok();
+    draw_change_row(
+        target,
+        quote.day.change,
+        quote.day.change_pct,
+        CHANGE_DAY_Y,
+        change_color(quote.day.change),
+        None,
+    );
+    if let Some(ah) = &quote.ah {
+        draw_change_row(
+            target,
+            ah.change,
+            ah.change_pct,
+            CHANGE_AH_Y,
+            change_color(ah.change),
+            Some("AH"),
+        );
     }
 
     draw_dots(target, index, count);
 }
 
-fn draw_placeholder<T>(target: &mut T, label: &str, index: usize, count: usize)
-where
+fn draw_placeholder<T>(
+    target: &mut T,
+    label: &str,
+    name: &str,
+    index: usize,
+    count: usize,
+    scroll: i32,
+) where
     T: DrawTarget<Color = Rgb565>,
 {
     draw_title(target, label, "--.--", GHOST);
+    draw_name_band(target, name, scroll);
 
     let style = MonoTextStyleBuilder::new()
         .font(&FONT_10X20)
@@ -438,7 +484,7 @@ where
         .build();
     Text::with_alignment(
         "waiting for data...",
-        Point::new(WIDTH / 2, 131),
+        Point::new(WIDTH / 2, CHANGE_DAY_Y),
         style,
         Alignment::Center,
     )
@@ -452,18 +498,28 @@ fn draw_dots<T>(target: &mut T, index: usize, count: usize)
 where
     T: DrawTarget<Color = Rgb565>,
 {
-    const DOT_SPACING: i32 = 18;
-    const DOT_DIAMETER: u32 = 5;
-    let cy = HEIGHT - 12;
-    let start_x = WIDTH / 2 - ((count as i32 - 1) * DOT_SPACING) / 2;
+    const COLUMNS: usize = 3;
+    const DIAMETER: u32 = 5;
+    const MARGIN: i32 = 8;
 
-    for (i, dot_x) in (0..count).map(|i| (i, start_x + i as i32 * DOT_SPACING)) {
+    let rows = count.div_ceil(COLUMNS);
+    let spacing = if rows > 1 {
+        (CHANGE_BLOCK_BOTTOM - CHANGE_BLOCK_TOP - DIAMETER as i32) / (rows as i32 - 1)
+    } else {
+        0
+    };
+    let left = WIDTH - MARGIN - (COLUMNS as i32 - 1) * spacing;
+    let top = CHANGE_BLOCK_TOP + DIAMETER as i32 / 2;
+
+    for i in 0..count {
+        let x = left + (i % COLUMNS) as i32 * spacing;
+        let y = top + (i / COLUMNS) as i32 * spacing;
         let style = if i == index {
             PrimitiveStyle::with_fill(FOREGROUND)
         } else {
             PrimitiveStyle::with_fill(GHOST)
         };
-        Circle::new(Point::new(dot_x - 2, cy - 2), DOT_DIAMETER)
+        Circle::new(Point::new(x - 2, y - 2), DIAMETER)
             .into_styled(style)
             .draw(target)
             .ok();

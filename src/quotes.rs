@@ -7,15 +7,13 @@ use core::fmt;
 
 pub struct Symbol {
     pub label: &'static str,
-    // Display names are local: the Sina rows carry only the Chinese name.
     pub name: &'static str,
 }
 
 #[rustfmt::skip]
-pub const SYMBOLS: [Symbol; 9] = [
+pub const SYMBOLS: [Symbol; 8] = [
     Symbol { label: "AMD",  name: "Advanced Micro Devices, Inc." },
     Symbol { label: "MSFT", name: "Microsoft Corporation" },
-    Symbol { label: "XCEM", name: "Columbia ETF Tr II Columbia EM Core Ex China ETF" },
     Symbol { label: "VXUS", name: "Vanguard Star Fund Total Intl Stock Index Fd ETF Shs" },
     Symbol { label: "VOO",  name: "Vanguard Index Funds S&P 500 ETF USD" },
     Symbol { label: "NVDA", name: "Nvidia Corporation" },
@@ -27,11 +25,16 @@ pub const SYMBOLS: [Symbol; 9] = [
 pub const SYMBOL_COUNT: usize = SYMBOLS.len();
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub struct Quote {
+pub struct QuoteValue {
     pub price: i32,
     pub change: i32,
     pub change_pct: i32,
-    pub extended: bool,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct Quote {
+    pub day: QuoteValue,
+    pub ah: Option<QuoteValue>,
 }
 
 pub fn parse_quotes(body: &[u8]) -> [Option<Quote>; SYMBOL_COUNT] {
@@ -80,17 +83,6 @@ fn parse_symbol_quote(body: &[u8], label: &str) -> Option<Quote> {
 
     let price = field(row, 1).and_then(parse_fixed)?;
 
-    let extended_price = field(row, 21).and_then(parse_fixed).unwrap_or(0);
-    let extended_change = field(row, 23).and_then(parse_fixed).unwrap_or(0);
-    if extended_price > 0 && extended_price != price && extended_change != 0 {
-        return Some(Quote {
-            price: extended_price,
-            change: extended_change,
-            change_pct: field(row, 22).and_then(parse_fixed).unwrap_or(0),
-            extended: true,
-        });
-    }
-
     let prev_close = field(row, 26).and_then(parse_fixed).unwrap_or(0);
     let change = match field(row, 4).and_then(parse_fixed) {
         Some(c) => c,
@@ -102,11 +94,25 @@ fn parse_symbol_quote(body: &[u8], label: &str) -> Option<Quote> {
         None => 0,
     };
 
+    let extended_price = field(row, 21).and_then(parse_fixed).unwrap_or(0);
+    let extended_change = field(row, 23).and_then(parse_fixed).unwrap_or(0);
+    let ah = if extended_price > 0 && extended_price != price && extended_change != 0 {
+        Some(QuoteValue {
+            price: extended_price,
+            change: extended_change,
+            change_pct: field(row, 22).and_then(parse_fixed).unwrap_or(0),
+        })
+    } else {
+        None
+    };
+
     Some(Quote {
-        price,
-        change,
-        change_pct,
-        extended: false,
+        day: QuoteValue {
+            price,
+            change,
+            change_pct,
+        },
+        ah,
     })
 }
 
@@ -220,8 +226,8 @@ pub fn fmt_pct(hundredths: i32) -> heapless::String<16> {
 
 impl fmt::Display for Quote {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let money = fmt_money(self.price, false);
-        let pct = fmt_pct(self.change_pct);
+        let money = fmt_money(self.day.price, false);
+        let pct = fmt_pct(self.day.change_pct);
         write!(f, "{} ({})", money.as_str(), pct.as_str())
     }
 }
