@@ -21,8 +21,6 @@ pub const BACKGROUND: Rgb565 = Rgb565::BLACK;
 const GAIN: Rgb565 = Rgb565::new(0, 63, 10);
 const LOSS: Rgb565 = Rgb565::new(31, 10, 10);
 const DIM: Rgb565 = Rgb565::new(16, 32, 16);
-const GHOST: Rgb565 = Rgb565::new(4, 7, 10);
-const FOREGROUND: Rgb565 = Rgb565::WHITE;
 
 pub const WIDTH: i32 = DISPLAY_WIDTH;
 pub const HEIGHT: i32 = DISPLAY_HEIGHT;
@@ -302,8 +300,13 @@ fn change_color(change: i32) -> Rgb565 {
     }
 }
 
-fn draw_title<T>(target: &mut T, label: &str, price: &str, color: Rgb565)
-where
+fn draw_title<T>(
+    target: &mut T,
+    label: &str,
+    price: &str,
+    ticker_color: Rgb565,
+    price_color: Rgb565,
+) where
     T: DrawTarget<Color = Rgb565>,
 {
     let measure = |s: &str, scale: u32| s.len() as i32 * 6 * scale as i32 - scale as i32;
@@ -317,7 +320,7 @@ where
         PRICE_MARGIN + measure(label, scale) / 2,
         PRICE_TOP,
         scale,
-        FOREGROUND,
+        ticker_color,
     );
     draw_big_text(
         target,
@@ -325,7 +328,7 @@ where
         WIDTH - PRICE_MARGIN - measure(price, scale) / 2,
         PRICE_TOP,
         scale,
-        color,
+        price_color,
     );
 }
 
@@ -438,7 +441,13 @@ where
 {
     let active = quote.ah.unwrap_or(quote.day);
     let price = fmt_money(active.price, false);
-    draw_title(target, label, price.as_str(), change_color(active.change));
+    draw_title(
+        target,
+        label,
+        price.as_str(),
+        ACCENTS[index % ACCENTS.len()],
+        change_color(active.change),
+    );
 
     draw_name_band(target, SYMBOLS[index].name, scroll);
 
@@ -474,7 +483,7 @@ fn draw_placeholder<T>(
 ) where
     T: DrawTarget<Color = Rgb565>,
 {
-    draw_title(target, label, "--.--", GHOST);
+    draw_title(target, label, "--.--", ACCENTS[index % ACCENTS.len()], DIM);
     draw_name_band(target, name, scroll);
 
     let style = MonoTextStyleBuilder::new()
@@ -515,9 +524,9 @@ where
         let x = left + (i % COLUMNS) as i32 * spacing;
         let y = top + (i / COLUMNS) as i32 * spacing;
         let style = if i == index {
-            PrimitiveStyle::with_fill(FOREGROUND)
+            PrimitiveStyle::with_fill(ACCENTS[i % ACCENTS.len()])
         } else {
-            PrimitiveStyle::with_fill(GHOST)
+            PrimitiveStyle::with_fill(DIM)
         };
         Circle::new(Point::new(x - 2, y - 2), DIAMETER)
             .into_styled(style)
