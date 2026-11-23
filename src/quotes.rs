@@ -11,15 +11,15 @@ pub struct Symbol {
 }
 
 #[rustfmt::skip]
-pub const SYMBOLS: [Symbol; 8] = [
-    Symbol { label: "AMD",  name: "Advanced Micro Devices, Inc." },
-    Symbol { label: "MSFT", name: "Microsoft Corporation" },
-    Symbol { label: "VXUS", name: "Vanguard Star Fund Total Intl Stock Index Fd ETF Shs" },
+pub const SYMBOLS: &[Symbol] = &[
     Symbol { label: "VOO",  name: "Vanguard Index Funds S&P 500 ETF USD" },
-    Symbol { label: "NVDA", name: "Nvidia Corporation" },
-    Symbol { label: "FDLO", name: "Fidelity Covington Trust Low Volatility Factor ETF" },
     Symbol { label: "META", name: "Meta Platforms, Inc." },
+    Symbol { label: "MSFT", name: "Microsoft Corporation" },
+    Symbol { label: "VXUS", name: "Vanguard Total International Stock Index Fund" },
     Symbol { label: "NATO", name: "Themes Transatlantic Defense ETF" },
+    Symbol { label: "NVDA", name: "Nvidia Corporation" },
+    Symbol { label: "AMD",  name: "Advanced Micro Devices, Inc." },
+    Symbol { label: "FDLO", name: "Fidelity Low Volatility Factor ETF" },
 ];
 
 pub const SYMBOL_COUNT: usize = SYMBOLS.len();
