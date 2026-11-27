@@ -6,9 +6,9 @@ mod quotes;
 mod screen;
 
 use crate::{
-    net::{POLL_INTERVAL, QUOTES, STATUS},
+    net::{POLL_INTERVAL, QUOTES},
     quotes::{Quote, SYMBOLS, SYMBOL_COUNT},
-    screen::{draw, marquee_scroll, next_marquee_step, redraw_marquee, tile_dwell_ms, Page},
+    screen::{draw, marquee_scroll, next_marquee_step, redraw_marquee, tile_dwell_ms},
 };
 use embassy_executor::Spawner;
 use embassy_futures::select::{select, Either};
@@ -36,13 +36,11 @@ enum Render {
 #[derive(Copy, Clone)]
 enum Mode {
     Ticker,
-    Status { refresh_at: Instant },
     Asleep { wake_at: Instant },
 }
 
 struct Ui {
     quotes: [Option<Quote>; SYMBOL_COUNT],
-    status: net::Status,
     mode: Mode,
     tile: usize,
     tile_start: Instant,
@@ -58,7 +56,6 @@ impl Ui {
         let tile_until = now + Self::tile_dwell(0);
         Self {
             quotes,
-            status: STATUS.lock(|s| s.borrow().clone()),
             mode: Mode::Ticker,
             tile: 0,
             tile_start: now,
@@ -74,13 +71,6 @@ impl Ui {
 
     fn quotes_stale(&self) -> bool {
         self.last_quote_at.elapsed() >= STALE_AFTER
-    }
-
-    fn page(&self) -> Page {
-        match self.mode {
-            Mode::Status { .. } => Page::Status,
-            _ => Page::Ticker,
-        }
     }
 
     fn restart_tile(&mut self, now: Instant) {
@@ -120,20 +110,15 @@ impl Ui {
         let now = Instant::now();
         let was_waiting = self.quotes.iter().all(Option::is_none);
         let quotes_now = QUOTES.lock(|q| q.get());
-        let status_now = STATUS.lock(|s| s.borrow().clone());
-        let quotes_changed = quotes_now != self.quotes;
-        if quotes_changed || status_now != self.status {
+        if quotes_now != self.quotes {
             let was_stale = self.quotes_stale();
             self.quotes = quotes_now;
-            self.status = status_now;
-            if quotes_changed {
-                self.last_quote_at = now;
-                if was_stale && matches!(self.mode, Mode::Asleep { .. }) {
-                    self.wake(now);
-                } else if was_waiting && self.quotes.iter().any(Option::is_some) {
-                    self.tile = 0;
-                    self.restart_tile(now);
-                }
+            self.last_quote_at = now;
+            if was_stale && matches!(self.mode, Mode::Asleep { .. }) {
+                self.wake(now);
+            } else if was_waiting && self.quotes.iter().any(Option::is_some) {
+                self.tile = 0;
+                self.restart_tile(now);
             }
             self.render = Some(Render::Full);
         }
@@ -161,26 +146,8 @@ impl Ui {
             self.wake(now);
         }
 
-        match event {
-            ButtonEvent::LongPress => {
-                if matches!(self.mode, Mode::Status { .. }) {
-                    self.mode = Mode::Ticker;
-                    self.restart_tile(now);
-                } else {
-                    self.mode = Mode::Status {
-                        refresh_at: now + SCREEN_PHASE,
-                    };
-                }
-                self.render = Some(Render::Full);
-            }
-            ButtonEvent::ShortPress => match self.mode {
-                Mode::Status { .. } => {
-                    self.mode = Mode::Ticker;
-                    self.render = Some(Render::Full);
-                    self.restart_tile(now);
-                }
-                _ => self.advance_tile(),
-            },
+        if let ButtonEvent::ShortPress = event {
+            self.advance_tile()
         }
     }
 
@@ -199,11 +166,6 @@ impl Ui {
                 } else {
                     self.wake(now);
                 }
-            }
-            Mode::Status { .. } => {
-                self.mode = Mode::Status {
-                    refresh_at: now + SCREEN_PHASE,
-                };
             }
             Mode::Ticker => {
                 if now >= self.tile_until {
@@ -230,7 +192,6 @@ impl Ui {
     fn next_deadline(&self) -> Instant {
         match self.mode {
             Mode::Asleep { wake_at } => wake_at,
-            Mode::Status { refresh_at } => refresh_at,
             Mode::Ticker => {
                 let mut next = self.tile_until;
                 if let Some(step) = self.next_band_step() {
@@ -281,7 +242,7 @@ async fn main(spawner: Spawner) -> ! {
                 redraw_marquee(&mut display, SYMBOLS[ui.tile].name, scroll).await;
             }
             Some(Render::Full) => {
-                draw(&mut display, ui.page(), ui.tile, &ui.quotes, scroll).await;
+                draw(&mut display, ui.tile, &ui.quotes, scroll).await;
             }
             None => {}
         }

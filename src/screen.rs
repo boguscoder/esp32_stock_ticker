@@ -1,11 +1,5 @@
-use crate::net::{QUOTE_SOURCE, STATUS};
 use crate::quotes::{fmt_money, fmt_pct, Quote, SYMBOLS, SYMBOL_COUNT};
-use core::{
-    fmt::{Display, Write},
-    sync::atomic::{AtomicU32, Ordering},
-};
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, mutex::Mutex};
-use embassy_time::Instant;
 use embedded_graphics::{
     geometry::Size,
     mono_font::{ascii::FONT_10X20, MonoTextStyleBuilder},
@@ -15,55 +9,31 @@ use embedded_graphics::{
     text::{Alignment, Text},
 };
 use embedded_graphics_framebuf::FrameBuf;
-use waveshare_display::{Display as Panel, LandscapeDisplay, DISPLAY_HEIGHT, DISPLAY_WIDTH};
+use waveshare_display::{
+    Display as Panel, LandscapeDisplay, DISPLAY_HEIGHT as HEIGHT, DISPLAY_WIDTH as WIDTH,
+};
 
-pub const BACKGROUND: Rgb565 = Rgb565::BLACK;
-const GAIN: Rgb565 = Rgb565::new(0, 63, 10);
-const LOSS: Rgb565 = Rgb565::new(31, 10, 10);
+const BACKGROUND: Rgb565 = Rgb565::BLACK;
+const GAIN: Rgb565 = Rgb565::new(0, 52, 4);
+const LOSS: Rgb565 = Rgb565::new(26, 8, 4);
 const DIM: Rgb565 = Rgb565::new(16, 32, 16);
-
-pub const WIDTH: i32 = DISPLAY_WIDTH;
-pub const HEIGHT: i32 = DISPLAY_HEIGHT;
 
 static FRAMEBUFFER: Mutex<CriticalSectionRawMutex, [Rgb565; (WIDTH * HEIGHT) as usize]> =
     Mutex::new([Rgb565::BLACK; (WIDTH * HEIGHT) as usize]);
 
-// Per-render accent for the Status page: xorshift seeded from the clock, then
-// mod over a legible-on-black palette so it can never fade into the background.
-static RNG_STATE: AtomicU32 = AtomicU32::new(0);
-
-const ACCENTS: [Rgb565; 8] = [
-    Rgb565::new(31, 42, 0),  // amber
-    Rgb565::new(0, 55, 31),  // cyan
-    Rgb565::new(31, 8, 31),  // magenta
-    Rgb565::new(10, 63, 0),  // lime
-    Rgb565::new(8, 31, 31),  // sky
-    Rgb565::new(31, 16, 26), // pink
-    Rgb565::new(0, 46, 24),  // teal
-    Rgb565::new(21, 8, 31),  // purple
+const ACCENTS: &[Rgb565] = &[
+    Rgb565::new(31, 32, 0),  // amber
+    Rgb565::new(31, 58, 0),  // gold
+    Rgb565::new(31, 8, 26),  // magenta
+    Rgb565::new(0, 63, 26),  // mint
+    Rgb565::new(31, 20, 12), // coral
+    Rgb565::new(12, 55, 31), // sky
+    Rgb565::new(20, 10, 31), // violet
+    Rgb565::new(31, 63, 31), // white
 ];
-
-fn random_accent() -> Rgb565 {
-    let mut x = match RNG_STATE.load(Ordering::Relaxed) {
-        0 => Instant::now().as_millis() as u32 | 1,
-        seeded => seeded,
-    };
-    x ^= x << 13;
-    x ^= x >> 17;
-    x ^= x << 5;
-    RNG_STATE.store(x, Ordering::Relaxed);
-    ACCENTS[((x >> 16) as usize) % ACCENTS.len()]
-}
-
-#[derive(Copy, Clone, PartialEq, Eq)]
-pub enum Page {
-    Ticker,
-    Status,
-}
 
 pub async fn draw(
     raw_display: &mut Panel<'_>,
-    page: Page,
     tile: usize,
     quotes: &[Option<Quote>; SYMBOL_COUNT],
     scroll: i32,
@@ -73,27 +43,9 @@ pub async fn draw(
 
     fbuf.clear(BACKGROUND).unwrap();
 
-    // In-memory drawing can't fail; discard the Results.
-    match page {
-        Page::Ticker => match &quotes[tile] {
-            Some(quote) => draw_tile(
-                &mut fbuf,
-                SYMBOLS[tile].label,
-                quote,
-                tile,
-                SYMBOL_COUNT,
-                scroll,
-            ),
-            None => draw_placeholder(
-                &mut fbuf,
-                SYMBOLS[tile].label,
-                SYMBOLS[tile].name,
-                tile,
-                SYMBOL_COUNT,
-                scroll,
-            ),
-        },
-        Page::Status => draw_status(&mut fbuf).await,
+    match &quotes[tile] {
+        Some(quote) => draw_tile(&mut fbuf, quote, tile, SYMBOL_COUNT, scroll),
+        None => draw_placeholder(&mut fbuf, tile, SYMBOL_COUNT, scroll),
     };
 
     let mut panel = LandscapeDisplay { base: raw_display };
@@ -391,15 +343,10 @@ fn draw_change_row<T>(
         .ok();
 
     if let Some(tag) = tag {
-        let tag_style = MonoTextStyleBuilder::new()
-            .font(&FONT_10X20)
-            .text_color(DIM)
-            .background_color(BACKGROUND)
-            .build();
         Text::with_alignment(
             tag,
             Point::new(text_x + row.len() as i32 * 10 + 8, y),
-            tag_style,
+            style,
             Alignment::Left,
         )
         .draw(target)
@@ -437,7 +384,7 @@ where
     draw_big_text(target, upper.as_str(), cx, top, NAME_SCALE, DIM);
 }
 
-fn draw_tile<T>(target: &mut T, label: &str, quote: &Quote, index: usize, count: usize, scroll: i32)
+fn draw_tile<T>(target: &mut T, quote: &Quote, index: usize, count: usize, scroll: i32)
 where
     T: DrawTarget<Color = Rgb565>,
 {
@@ -445,7 +392,7 @@ where
     let price = fmt_money(active.price, false);
     draw_title(
         target,
-        label,
+        SYMBOLS[index].label,
         price.as_str(),
         ACCENTS[index % ACCENTS.len()],
         change_color(active.change),
@@ -475,18 +422,18 @@ where
     draw_dots(target, index, count);
 }
 
-fn draw_placeholder<T>(
-    target: &mut T,
-    label: &str,
-    name: &str,
-    index: usize,
-    count: usize,
-    scroll: i32,
-) where
+fn draw_placeholder<T>(target: &mut T, index: usize, count: usize, scroll: i32)
+where
     T: DrawTarget<Color = Rgb565>,
 {
-    draw_title(target, label, "--.--", ACCENTS[index % ACCENTS.len()], DIM);
-    draw_name_band(target, name, scroll);
+    draw_title(
+        target,
+        SYMBOLS[index].label,
+        "--.--",
+        ACCENTS[index % ACCENTS.len()],
+        DIM,
+    );
+    draw_name_band(target, SYMBOLS[index].name, scroll);
 
     let style = MonoTextStyleBuilder::new()
         .font(&FONT_10X20)
@@ -510,8 +457,8 @@ where
     T: DrawTarget<Color = Rgb565>,
 {
     const COLUMNS: usize = 3;
-    const DIAMETER: u32 = 5;
-    const MARGIN: i32 = 8;
+    const DIAMETER: u32 = 10;
+    const MARGIN: i32 = 10;
 
     let rows = count.div_ceil(COLUMNS);
     let spacing = if rows > 1 {
@@ -535,42 +482,4 @@ where
             .draw(target)
             .ok();
     }
-}
-
-async fn draw_status<T>(target: &mut T)
-where
-    T: DrawTarget<Color = Rgb565>,
-{
-    let mut text = heapless::String::<160>::new();
-    STATUS.lock(|cell| {
-        let status = cell.borrow();
-        write!(
-            &mut text,
-            "SSID: {}\nPhase: {:?}\nIP: {}\nQuote time: {}\nSource: {}",
-            status.ssid,
-            status.phase,
-            opt_display(&status.ip),
-            opt_display(&status.quote_time),
-            QUOTE_SOURCE,
-        )
-        .ok();
-    });
-
-    let style = MonoTextStyleBuilder::new()
-        .font(&FONT_10X20)
-        .text_color(random_accent())
-        .background_color(BACKGROUND)
-        .build();
-    Text::with_alignment(text.as_str(), Point::new(10, 30), style, Alignment::Left)
-        .draw(target)
-        .ok();
-}
-
-fn opt_display<T: Display>(value: &Option<T>) -> heapless::String<48> {
-    let mut out = heapless::String::<48>::new();
-    match value {
-        Some(v) => write!(out, "{}", v).ok(),
-        None => write!(out, "N/A").ok(),
-    };
-    out
 }

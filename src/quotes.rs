@@ -43,26 +43,6 @@ pub fn parse_quotes(body: &[u8]) -> [Option<Quote>; SYMBOL_COUNT] {
     out
 }
 
-pub fn parse_timestamp(body: &[u8]) -> Option<heapless::String<20>> {
-    for sym in SYMBOLS.iter() {
-        let Some(row) = symbol_row(body, sym.label) else {
-            continue;
-        };
-        let Some(stamp) = field(row, 24)
-            .or_else(|| field(row, 25))
-            .and_then(|ts| core::str::from_utf8(ts).ok())
-        else {
-            continue;
-        };
-        let mut out = heapless::String::<20>::new();
-        if out.push_str(stamp).is_err() {
-            continue;
-        }
-        return Some(out);
-    }
-    None
-}
-
 fn symbol_row<'a>(body: &'a [u8], label: &str) -> Option<&'a [u8]> {
     let mut needle = heapless::String::<32>::new();
     needle.push_str("hq_str_gb_").ok()?;
